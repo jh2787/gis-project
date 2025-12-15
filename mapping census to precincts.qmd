@@ -1,0 +1,911 @@
+---
+title: "NYC Precincts to Census Tracts"
+format: 
+  html:
+    embed-resources: true
+---
+Load libraries
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(sf)
+library(webshot)
+```
+
+Load precinct shapefile and adjust CRS if necessary
+```{r}
+setwd("~/Georgetown DSAN/Semester 1/DSAN 5100/Final Project/Fareeza Work/Final_Project/Final Project")
+precincts <- st_read("data/nyc_precincts.geojson")
+
+#check
+st_geometry_type(precincts)
+st_crs(precincts)
+```
+
+Download census block geo data from https://www2.census.gov/geo/tiger/TIGER2020/TABBLOCK20/. download for all five 
+```{r}
+blocks <- st_read("data/tl_2020_36_tabblock20/tl_2020_36_tabblock20.shp")
+
+# st_geometry_type(blocks)
+st_crs(blocks)
+
+```
+
+filter to NYC only
+```{r}
+nyc_counties <- c("005", "047", "061", "081", "085")
+
+blocks_nyc <- blocks |>
+  dplyr::filter(COUNTYFP20 %in% nyc_counties)
+
+blocks_nyc
+nrow(blocks_nyc)
+
+```
+
+get clean population race data using census API
+```{r}
+# install.packages("tidycensus")
+library(tidycensus)
+census_api_key(Sys.getenv("CENSUS_API_KEY"))
+
+p1_vars <- c(
+  "P1_001N",  # Total
+  "P1_003N",  # White
+  "P1_004N",  # Black
+  "P1_005N",  # American Indian
+  "P1_006N",  # Asian
+  "P1_007N",  # NHPI
+  "P1_008N",  # Some other race
+  "P1_009N"   # Two or more races
+)
+
+# block-level P1 data for NYC counties
+p1 <- get_decennial(
+  geography = "block",
+  variables = p1_vars,
+  state = "NY",
+  county = c("005", "047", "061", "081", "085"),
+  year = 2020,
+  output = "wide"
+)
+
+head(p1)
+nrow(p1)
+
+```
+
+```{r}
+#hispanic vs not
+
+p2_vars <- c(
+  "P2_001N",  # Total
+  "P2_002N",  # Hispanic
+  "P2_003N"   # Not Hispanic
+)
+
+p2 <- get_decennial(
+  geography = "block",
+  variables = p2_vars,
+  state = "NY",
+  county = c("005", "047", "061", "081", "085"),
+  year = 2020,
+  output = "wide"
+)
+
+head(p2)
+
+```
+
+join race/hispanic vs. not to block geom
+```{r}
+#rename to match blocks_nyc GEOID - only need to run if p1 and p2 are recreated
+p1 <- p1 |> rename(GEOID20 = GEOID)
+p2 <- p2 |> rename(GEOID20 = GEOID)
+
+blocks_demo <- blocks_nyc |>
+  left_join(p1, by = "GEOID20") |>
+  left_join(p2, by = "GEOID20")
+
+head(blocks_demo)
+nrow(blocks_demo)
+summary(blocks_demo$P1_001N)
+```
+
+reproject
+```{r}
+blocks_proj <- st_transform(blocks_demo, 32118)
+precincts_proj <- st_transform(precincts, 32118)
+
+st_crs(blocks_proj)
+st_crs(precincts_proj)
+
+```
+
+```{r}
+# get areas of each block
+blocks_proj <- blocks_proj |>
+  mutate(block_area = st_area(geometry))
+
+#intersect with precincts
+block_precinct_intersections <- st_intersection(blocks_proj, precincts_proj)
+
+#area of each intersection
+block_precinct_intersections <- block_precinct_intersections |>
+  mutate(piece_area = st_area(geometry))
+
+nrow(block_precinct_intersections)
+head(block_precinct_intersections)
+```
+
+```{r}
+#get proportional weights
+block_precinct_intersections <- block_precinct_intersections |>
+  mutate(weight = as.numeric(piece_area / block_area))
+
+demo_vars <- c(
+  "P1_001N","P1_003N","P1_004N","P1_005N",
+  "P1_006N","P1_007N","P1_008N","P1_009N",
+  "P2_001N","P2_002N","P2_003N"
+)
+
+for (v in demo_vars) {
+  block_precinct_intersections[[paste0(v, "_alloc")]] <-
+    block_precinct_intersections[[v]] * block_precinct_intersections$weight
+}
+
+
+precinct_demographics <- block_precinct_intersections |>
+  st_drop_geometry() |>
+  group_by(precinct) |>
+  summarise(across(ends_with("_alloc"), sum, na.rm = TRUE))
+
+precinct_demographics
+```
+
+```{r}
+#merge demographics with precinct geoms
+precincts_final <- precincts_proj |>
+  left_join(precinct_demographics, by = "precinct")
+
+precincts_final
+```
+
+```{r}
+race_vars <- c(
+  "P1_003N_alloc", # White
+  "P1_004N_alloc", # Black
+  "P1_005N_alloc", # AIAN
+  "P1_006N_alloc", # Asian
+  "P1_007N_alloc", # NHPI
+  "P1_008N_alloc", # Other
+  "P1_009N_alloc"  # Two+
+)
+
+
+pal <- colorRampPalette(c("blue", "magenta", "orange", "yellow"))
+
+for (v in race_vars) {
+  plot(
+    precincts_final[v],
+    main = v,
+    key.pos = 4,
+  )
+}
+
+```
+
+Point Data - Violent Felonies
+```{r}
+library(ggplot2)
+
+# Load violent felony point data 
+setwd('/home/jmchowes/Georgetown DSAN/Semester 1/DSAN 5100/Final Project/Fareeza Work/Final_Project/Final Project/')
+violent_crimes <- read.csv("../../../Data/violent_felony_cleaned_13.csv")
+
+# Convert to sf object with coordinates
+violent_sf <- st_as_sf(
+  violent_crimes,
+  coords = c("long", "lat"),
+  crs = 4326
+)
+
+# Filter to NYC bounds 
+# This removes points outside the city limits
+violent_sf <- violent_sf %>%
+  filter(
+    !is.na(geometry),
+    sf::st_coordinates(geometry)[, 1] > -74.5,
+    sf::st_coordinates(geometry)[, 1] < -73.7,
+    sf::st_coordinates(geometry)[, 2] > 40.45,
+    sf::st_coordinates(geometry)[, 2] < 40.95
+  )
+
+# Reproject to same CRS as precincts
+violent_proj <- st_transform(violent_sf, 32118)
+
+print(paste("Total violent felony records (after NYC bounds filter):", nrow(violent_proj)))
+print(head(violent_proj))
+
+# Check for before/after periods
+if ("time_period" %in% colnames(violent_proj)) {
+  print(table(violent_proj$time_period))
+}
+```
+
+Count Points Within Precincts
+```{r}
+# Count total crimes per precinct
+crime_counts <- violent_proj %>%
+  st_join(precincts_proj, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(precinct) %>%
+  summarise(total_crimes = n(),
+            .groups = "drop")
+
+print(crime_counts)
+
+# Count crimes before and after PATTERIZER if time_period exists
+if ("time_period" %in% colnames(violent_proj)) {
+  crime_by_period <- violent_proj %>%
+    st_join(precincts_proj, join = st_within) %>%
+    st_drop_geometry() %>%
+    group_by(precinct, time_period) %>%
+    summarise(crime_count = n(),
+              .groups = "drop") %>%
+    pivot_wider(
+      names_from = time_period,
+      values_from = crime_count,
+      values_fill = 0
+    )
+}
+
+print(crime_by_period)
+write.csv(crime_by_period,"../../../Data/crime_by_period" )
+```
+
+Merge Crime Data with Precinct Demographics
+```{r}
+# Add crime counts to precincts_final
+precincts_analysis <- precincts_final %>%
+  left_join(crime_counts, by = "precinct")
+
+# Fill NA with 0 for precincts with no crimes
+precincts_analysis <- precincts_analysis %>%
+  mutate(total_crimes = replace_na(total_crimes, 0))
+
+# Calculate crime rate per capita
+precincts_analysis <- precincts_analysis %>%
+  mutate(
+    total_population = P1_001N_alloc,
+    crime_rate = (total_crimes / total_population) * 1000  # per 1000 residents
+  )
+
+print(precincts_analysis)
+```
+
+Visualize Point Data on Precinct Map
+```{r}
+# Map showing crimes overlaid on precincts
+# Ensure violent_proj has year
+violent_proj <- violent_proj %>%
+  mutate(
+    complaint_date = as.Date(complaint_date),
+    year = format(complaint_date, "%Y")
+  )
+
+# Make sure precinct IDs are the same type on BOTH datasets
+precincts_final <- precincts_final %>%
+  mutate(precinct = as.character(precinct))
+
+years <- 2006:2024
+map_list <- list()
+
+for (yr in years) {
+  
+  # Filter points for that year
+  violent_year <- violent_proj %>% filter(year == as.character(yr))
+  
+  # Summarize total crimes per precinct for that year
+  crime_totals <- violent_year %>%
+    st_drop_geometry() %>%
+    mutate(precinct_crime = as.character(precinct_crime)) %>%  # match type!
+    count(precinct_crime, name = "total_crimes")
+  
+  # Join yearly totals to precinct polygons
+  precincts_year <- precincts_final %>%
+    left_join(crime_totals, by = c("precinct" = "precinct_crime")) %>%
+    mutate(
+      total_crimes     = replace_na(total_crimes, 0),
+      total_population = P1_001N_alloc,
+      crime_rate       = (total_crimes / total_population) * 1000  # per 1000 residents
+    )
+  
+  p <- ggplot() +
+    geom_sf(
+      data = precincts_year,
+      aes(fill = total_crimes),            # or crime_rate
+      alpha = 0.6
+    ) +
+    geom_sf(
+      data = violent_year,
+      color = "red",
+      size  = 0.5,
+      alpha = 0.3
+    ) +
+    scale_fill_viridis_c(name = "Total Crimes") +  # or "Crimes per 1,000"
+    theme_minimal() +
+    labs(
+      title    = paste("Violent Felonies by NYPD Precinct —", yr),
+      subtitle = "Areal crime counts (precincts) with point-level incidents",
+      x = NULL,
+      y = NULL
+    ) +
+    theme(plot.title = element_text(size = 16, face = "bold"))
+  
+  print(p)
+  
+  ggsave(
+    filename = paste0("violent_map_", yr, ".png"),
+    plot     = p,
+    width    = 10,
+    height   = 8,
+    dpi      = 300
+  )
+  
+  map_list[[as.character(yr)]] <- p
+}
+
+```
+
+```{r}
+
+# Crime rate per 1000 residents
+for (yr in years) {
+  
+  # Filter points for that year
+  violent_year <- violent_proj %>% filter(year == as.character(yr))
+  
+  # Summarize total crimes per precinct for that year
+  crime_totals <- violent_year %>%
+    st_drop_geometry() %>%
+    mutate(precinct_crime = as.character(precinct_crime)) %>%  # match type!
+    count(precinct_crime, name = "total_crimes")
+  
+  # Join yearly totals to precinct polygons
+  precincts_year <- precincts_final %>%
+    left_join(crime_totals, by = c("precinct" = "precinct_crime")) %>%
+    mutate(
+      total_crimes     = replace_na(total_crimes, 0),
+      total_population = P1_001N_alloc,
+      crime_rate       = (total_crimes / total_population) * 1000  # per 1000 residents
+    )
+  
+  p <- ggplot() +
+    geom_sf(
+      data = precincts_year,
+      aes(fill = crime_rate), 
+      alpha = 0.6
+    ) +
+    geom_sf(
+      data = violent_year,
+      color = "red",
+      size  = 0.5,
+      alpha = 0.3
+    ) +
+    scale_fill_viridis_c(name = "Crimes per 1,000") +  
+    labs(
+      title    = paste("Violent Felonies rate by NYPD Precinct —", yr),
+      subtitle = "Areal crime rate (precincts) with point-level incidents",
+      x = NULL,
+      y = NULL
+    ) +
+    theme(plot.title = element_text(size = 16, face = "bold"))
+  
+  print(p)
+  
+  ggsave(
+    filename = paste0("crime_rate_map_", yr, ".png"),
+    plot     = p,
+    width    = 10,
+    height   = 8,
+    dpi      = 300
+  )
+  
+  map_list[[as.character(yr)]] <- p
+}
+```
+
+```{r}
+library(htmlwidgets)
+library(leaflet)
+precincts_leaf <- st_transform(precincts_final, 4326)
+violent_leaf   <- st_transform(violent_proj, 4326)
+
+# Ensure precinct is character so it matches precinct_crime after coercion
+precincts_leaf <- precincts_leaf %>%
+  mutate(precinct = as.character(precinct))
+
+violent_leaf <- violent_leaf %>%
+  mutate(
+    complaint_date = as.Date(complaint_date),
+    year = format(complaint_date, "%Y"),
+    year = as.character(year)  # makes sure it's atomic
+  )
+
+years <- 2006:2024
+interactive_maps <- list()
+legend_max <- 30
+legend_breaks <- seq(0, legend_max, 5)
+
+for (yr in years) {
+  
+  # ------------------------------------------------------------
+  # 1. Filter crimes for this year
+  # ------------------------------------------------------------
+  violent_year <- violent_leaf %>%
+    filter(year == as.character(yr))
+  
+  # If there are no crimes this year, skip gracefully
+  if (nrow(violent_year) == 0) {
+    message("No data for year ", yr, " - skipping.")
+    next
+  }
+  
+  # ------------------------------------------------------------
+  # 2. Compute total crimes per precinct for this year
+  # ------------------------------------------------------------
+  crime_totals <- violent_year %>%
+    st_drop_geometry() %>%
+    mutate(precinct_crime = as.character(precinct_crime)) %>%
+    count(precinct_crime, name = "total_crimes")
+  
+  # ------------------------------------------------------------
+  # 3. Join to precinct polygons for this year
+  # ------------------------------------------------------------
+  precincts_year <- precincts_leaf %>%
+    left_join(crime_totals, by = c("precinct" = "precinct_crime")) %>%
+    mutate(
+      total_crimes     = replace_na(total_crimes, 0),
+      total_population = P1_001N_alloc,
+      crime_rate       = (total_crimes / total_population) * 1000,  # per 1000 residents
+      crime_rate_capped = pmin(crime_rate, legend_max)
+    )
+  
+  # ------------------------------------------------------------
+  # 4. Color palette for precinct fill (by total_crimes)
+  #    Change domain to crime_rate if you prefer rate instead.
+  # ------------------------------------------------------------
+  pal <- leaflet::colorNumeric(
+    palette = "viridis",
+    domain  = c(0, legend_max),
+    na.color = "transparent"
+  )
+  
+
+  print(head(violent_year))
+  # ------------------------------------------------------------
+  # 5. Prepare data frame for heatmap (needs lng/lat columns)
+  # ------------------------------------------------------------
+  heat_df <- violent_year %>%
+    st_drop_geometry() %>%
+    filter(!is.na(x_coord), !is.na(y_coord))
+  
+  # ------------------------------------------------------------
+  # 6. Build interactive leaflet map
+  # ------------------------------------------------------------
+  m <- leaflet() %>%
+    addProviderTiles("CartoDB.Positron") %>%
+    
+    # Polygon layer (choropleth)
+    addPolygons(
+      data = precincts_year,
+      fillColor   = ~pal(crime_rate_capped),
+      fillOpacity = 0.7,
+      color       = "white",
+      weight      = 1,
+      opacity     = 1,
+      smoothFactor = 0.2,
+      highlightOptions = highlightOptions(
+        weight = 2,
+        color = "black",
+        fillOpacity = 0.9,
+        bringToFront = TRUE
+      ),
+      label = ~paste0(
+        "Precinct: ", precinct, "<br>",
+        "Total crimes: ", total_crimes, "<br>",
+        "Crimes per 1,000: ", round(crime_rate, 2),
+        "Year: ", yr
+      ) %>% lapply(htmltools::HTML)
+    ) %>%
+    
+    # Legend for precinct fill
+    leaflet::addLegend(
+      pal    = pal,
+      values = legend_breaks,
+      labFormat = labelFormat(digits = 0, suffix = " per 1k"),
+      title  = "Crimes per 1,000 residents",
+      opacity = 0.7,
+      position = "bottomright"
+    ) %>%
+    
+    # Heatmap of point incidents
+    leaflet.extras::addHeatmap(
+      data       = heat_df,
+      lng        = ~as.integer(x_coord),
+      lat        = ~as.integer(y_coord),
+      radius     = 15,
+      blur       = 25,
+      max        = 0.05,
+      intensity  = ~1,
+      gradient   = NULL
+    ) %>%
+    
+    leaflet::addControl(
+      html = paste0(
+        "<div style='background-color: rgba(255,255,255,0.8); 
+                      padding: 6px 10px; 
+                      border-radius: 4px; 
+                      font-size: 14px;'>
+           <b>Violent Felonies by NYPD Precinct — ", yr, "</b><br/>
+           Areal crime counts with heatmap of incidents
+         </div>"
+      ),
+      position = "topright"
+    )
+  
+  print(m)
+  
+  # Save HTML file
+  html_file <- paste0("violent_map_interactive_", yr, ".html")
+  saveWidget(
+    m,
+    file = html_file,
+    selfcontained = TRUE
+  )
+  
+  # Save as PNG using webshot
+  png_file <- paste0("violent_map_interactive_", yr, ".png")
+  webshot::webshot(html_file, file = png_file, vwidth = 1200, vheight = 800, delay = 3)
+  
+  interactive_maps[[as.character(yr)]] <- m
+}
+
+```
+
+```{r}
+# Comparison of demographic composition vs crime
+ggplot(precincts_analysis, aes(x = P1_004N_alloc, y = total_crimes)) +
+  geom_point(aes(size = total_population), alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  theme_minimal() +
+  labs(
+    title = "Black Population vs Crime Count by Precinct",
+    x = "Black Population (allocated)",
+    y = "Total Crimes",
+    size = "Total Population"
+  )
+```
+
+Summary Statistics for Over-policing Analysis
+```{r}
+# Create a summary for regression analysis
+regression_data <- precincts_analysis %>%
+  st_drop_geometry() %>%
+  select(
+    precinct,
+    total_crimes,
+    crime_rate,
+    total_population,
+    starts_with("P1_"),
+    starts_with("P2_")
+  ) %>%
+  mutate(
+    pct_black = (P1_004N_alloc / P1_001N_alloc) * 100,
+    pct_hispanic = (P2_002N_alloc / P2_001N_alloc) * 100,
+    pct_asian = (P1_006N_alloc / P1_001N_alloc) * 100,
+    pct_white = (P1_003N_alloc / P1_001N_alloc) * 100
+  )
+
+print(summary(regression_data))
+
+# Check for spatial autocorrelation
+print(cor(regression_data %>% select(total_crimes, pct_black, pct_hispanic, pct_asian, pct_white), use = "complete.obs"))
+```
+
+## Geospatial Regression Analysis for Over-policing Detection
+
+```{r}
+library(spdep)
+library(sp)
+library(lmtest)
+
+# Prepare spatial data: convert precincts_analysis to Spatial object for spdep
+precincts_sp <- as_Spatial(precincts_analysis)
+
+# Create spatial weights matrix (queen contiguity - precincts sharing edges/corners are neighbors)
+neighbors <- poly2nb(precincts_sp, queen = TRUE)
+weights <- nb2listw(neighbors, style = "W")
+
+print("Spatial neighbors structure created.")
+print(paste("Number of precincts:", length(neighbors)))
+```
+
+OLS Baseline Model (ignoring spatial structure)
+```{r}
+# OLS: crime_rate ~ pct_black + pct_hispanic + pct_white
+# This is the "naive" model that doesn't account for spatial autocorrelation
+
+ols_model <- lm(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = regression_data
+)
+
+summary(ols_model)
+
+# Test for spatial autocorrelation in residuals using Moran's I
+moran_test <- moran.test(residuals(ols_model), weights)
+print("Moran's I test on OLS residuals:")
+print(moran_test)
+```
+
+Spatial Lag Model (SAR - Spatial Autoregressive)
+```{r}
+# SAR: accounts for spatial spillover (crime in neighboring precincts influences local crime)
+# Useful for detecting if over-policing in one area affects nearby areas
+library(spatialreg)
+sar_model <- lagsarlm(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = regression_data,
+  listw = weights
+)
+
+summary(sar_model)
+
+# Compare OLS vs SAR
+sar_vs_ols <- anova(ols_model, sar_model)
+print("SAR vs OLS comparison:")
+print(sar_vs_ols)
+```
+
+Spatial Error Model (SEM - Spatial Error)
+```{r}
+# SEM: accounts for spatial autocorrelation in the error term
+# Useful if unobserved factors (e.g., policing resources, neighborhood characteristics) 
+# are spatially correlated
+
+sem_model <- errorsarlm(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = regression_data,
+  listw = weights
+)
+
+summary(sem_model)
+
+# Test for improvement over OLS
+lrtest_sem <- LR.sarlm(sem_model, ols_model)
+print("SEM vs OLS (Likelihood Ratio Test):")
+print(lrtest_sem)
+```
+
+Geographically Weighted Regression (GWR)
+```{r}
+library(spgwr)
+
+# GWR allows regression coefficients to vary spatially
+# Shows if demographic-crime relationships differ by location (detecting local over-policing patterns)
+
+# Convert to sf for GWR
+precincts_sf_gwr <- st_as_sf(precincts_analysis) %>%
+  filter(!is.na(crime_rate), !is.na(pct_black), !is.na(pct_hispanic), !is.na(pct_white))
+
+# Get centroids for GWR
+coords <- st_coordinates(st_centroid(precincts_sf_gwr))
+
+# Create sp object for GWR
+precincts_sp_gwr <- as_Spatial(precincts_sf_gwr)
+coordinates(precincts_sp_gwr) <- coords
+
+# Fit GWR model with adaptive bandwidth
+# Bandwidth selection using cross-validation
+bw <- gwr.sel(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_gwr,
+  adapt = TRUE
+)
+
+print(paste("GWR adaptive bandwidth:", round(bw, 2)))
+
+gwr_model <- gwr(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_gwr,
+  bandwidth = bw,
+  adapt = TRUE
+)
+
+print(gwr_model)
+
+# Extract local coefficients for mapping
+gwr_coefs <- as.data.frame(gwr_model$SDF)
+gwr_coefs$precinct <- precincts_sf_gwr$precinct
+
+print("Local pct_black coefficients (sample):")
+print(head(gwr_coefs$pct_black))
+```
+
+Comparison and Interpretation
+```{r}
+# Summary table of model coefficients
+comparison_table <- tibble(
+  Model = c("OLS", "SAR", "SEM"),
+  pct_black_coef = c(
+    coef(ols_model)["pct_black"],
+    coef(sar_model)["pct_black"],
+    coef(sem_model)["pct_black"]
+  ),
+  pct_black_pval = c(
+    coef(summary(ols_model))["pct_black", "Pr(>|t|)"],
+    coef(summary(sar_model))["pct_black", "Pr(>|z|)"],
+    coef(summary(sem_model))["pct_black", "Pr(>|z|)"]
+  ),
+  AIC = c(AIC(ols_model), AIC(sar_model), AIC(sem_model))
+)
+
+print("Model Comparison Summary:")
+print(comparison_table)
+
+# Interpretation for over-policing:
+# - Positive pct_black coefficient: higher Black population → higher crime rate
+# - Spatial lag significant: police resources cluster where they're most needed
+# - GWR variation: some areas show stronger demographic-crime relationships
+#   (may indicate localized over-policing or genuine crime patterns)
+```
+
+Map GWR Local Coefficients (pct_black effect by location)
+```{r}
+# Join GWR coefficients back to spatial data
+precincts_gwr_mapped <- precincts_sf_gwr %>%
+  left_join(gwr_coefs %>% select(precinct, pct_black), by = "precinct")
+
+# Visualize spatial variation in pct_black coefficient
+ggplot(precincts_gwr_mapped) +
+  geom_sf(aes(fill = pct_black), color = "white") +
+  scale_fill_diverging_c(palette = "RdBu", name = "Local coef\n(pct_black)") +
+  theme_minimal() +
+  labs(
+    title = "Geographically Weighted Regression: Black Population Effect",
+    subtitle = "Red = strong positive effect; Blue = weak/negative effect"
+  )
+```
+
+```{r}
+```
+
+## Demographic–Policing Interaction: Before vs After Patternizr
+
+### Graph 1: Mean Arrest Rate by Black Population Category
+```{r}
+library(ggplot2)
+library(scales)
+
+# Prepare data: compute mean crime rate by precinct demographic groups
+graph1_data <- precincts_analysis %>%
+  st_drop_geometry() %>%
+  mutate(
+    pct_black_cat = cut(pct_black, breaks = c(0, 25, 50, 75, 100), 
+                        labels = c("0–25%", "25–50%", "50–75%", "75–100%"))
+  ) %>%
+  filter(!is.na(pct_black_cat), !is.na(crime_rate)) %>%
+  group_by(pct_black_cat, time_period) %>%
+  summarise(
+    mean_rate = mean(crime_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(graph1_data, aes(x = pct_black_cat, y = mean_rate, fill = time_period)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_y_continuous(labels = label_number(suffix = " per 1k")) +
+  scale_fill_manual(values = c("before Patternizr" = "#3498db", "after Patternizr" = "#e74c3c")) +
+  labs(
+    title = "Violent Felony Arrest Rate by Precinct Black Population",
+    subtitle = "Mean arrest rate per 1,000 residents, before vs after Patternizr (Aug 2013)",
+    x = "Percentage Black Population (by precinct)",
+    y = "Mean Crime Rate",
+    fill = "Period"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(color = "gray50", size = 11),
+    legend.position = "bottom"
+  )
+```
+
+### Graph 2: Precinct-Level Change in Arrest Rate vs Black Population
+```{r}
+# Compute change in crime rate (after - before) by precinct
+graph2_data <- precincts_analysis %>%
+  st_drop_geometry() %>%
+  filter(!is.na(pct_black), !is.na(crime_rate)) %>%
+  group_by(precinct, pct_black) %>%
+  summarise(
+    rate_before = mean(crime_rate[which(time_period == "before Patternizr")], na.rm = TRUE),
+    rate_after = mean(crime_rate[which(time_period == "after Patternizr")], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    rate_change = rate_after - rate_before,
+    direction = ifelse(rate_change > 0, "Increase", "Decrease")
+  )
+
+ggplot(graph2_data, aes(x = pct_black, y = rate_change, color = direction)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.2, color = "gray40") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+  scale_color_manual(values = c("Increase" = "#e74c3c", "Decrease" = "#2ecc71")) +
+  labs(
+    title = "Change in Arrest Rate by Precinct Black Population",
+    subtitle = "Vertical axis = arrest rate change (after - before Patternizr)",
+    x = "Percentage Black Population (%)",
+    y = "Change in Crime Rate per 1,000",
+    color = "Direction"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(color = "gray50", size = 11),
+    legend.position = "bottom"
+  )
+```
+
+### Map 1: Black Population Distribution (Before Patternizr Period)
+```{r}
+# Map showing % Black population choropleth (before period)
+map1 <- ggplot(precincts_analysis %>% filter(time_period == "before Patternizr")) +
+  geom_sf(aes(fill = pct_black), color = "white", linewidth = 0.3) +
+  scale_fill_viridis_c(option = "plasma", name = "% Black", limits = c(0, 100)) +
+  theme_minimal() +
+  labs(
+    title = "Black Population & Arrest Activity (2000–2013)",
+    subtitle = "Census demographics (2020) by precinct",
+    fill = "Black (%)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "gray50", size = 10),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+print(map1)
+```
+
+### Map 2: Black Population Distribution (After Patternizr Period)
+```{r}
+# Map showing % Black population choropleth (after period)
+map2 <- ggplot(precincts_analysis %>% filter(time_period == "after Patternizr")) +
+  geom_sf(aes(fill = pct_black), color = "white", linewidth = 0.3) +
+  scale_fill_viridis_c(option = "plasma", name = "% Black", limits = c(0, 100)) +
+  theme_minimal() +
+  labs(
+    title = "Black Population & Arrest Activity (2021–2024)",
+    subtitle = "Census demographics (2020) by precinct",
+    fill = "Black (%)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "gray50", size = 10),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+print(map2)
+```
+
+### Summary: Demographic–Policing Patterns
+- **Graph 1** reveals whether precincts with higher Black populations experience disproportionately elevated arrest rates in both periods, with acceleration post-Patternizr indicating potential over-policing.
+- **Graph 2** identifies precincts where arrests surged most sharply after Patternizr, color-coded to show whether growth concentrated in majority-Black areas.
+- **Maps 1 & 2** display geographic distribution of racial composition alongside arrest intensity, enabling visual inspection of whether Patternizr's deployment concentrated in higher-Black precincts.

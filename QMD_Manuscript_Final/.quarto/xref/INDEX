@@ -1,0 +1,24 @@
+{
+  "index.qmd": {
+    "index.embed.ipynb": "0749caa0",
+    "index.out.ipynb": "eec1ee22",
+    "index-preview.html": "1980b757",
+    "index.html": "cb0564d5"
+  },
+  "test.qmd": {
+    "test.embed.ipynb": "63d66b13",
+    "test.out.ipynb": "c0482574",
+    "test-preview.html": "54f7c163"
+  },
+  ".quarto/embed/test.embed.ipynb": {
+    "test.embed-preview.html": "8c2c3de9"
+  },
+  "testing.qmd": {
+    "testing.embed.ipynb": "f0b9cefa",
+    "testing.out.ipynb": "95410393",
+    "testing-preview.html": "18d68c3a"
+  },
+  "try it.qmd": {
+    "try it-preview.html": "c9a42d20"
+  }
+}

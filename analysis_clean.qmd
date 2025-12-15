@@ -1,0 +1,1407 @@
+---
+title: "Untitled"
+format: html
+---
+LOAD LIBRARIES
+```{r}
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(tigris)
+library(spdep)
+```
+
+LOAD PRECINT SHAPEFILE
+```{r}
+precincts <- st_read("data/nyc_precincts.geojson")
+precincts_proj <- st_transform(precincts, 32118)
+```
+
+DOWNLOAD 2020 BLOCK GEOMs
+```{r}
+blocks_2020 <- st_read("data/tl_2020_36_tabblock20/tl_2020_36_tabblock20.shp")
+
+nyc_counties <- c("005", "047", "061", "081", "085")
+blocks_2020_nyc <- blocks_2020 %>%
+  filter(COUNTYFP20 %in% nyc_counties)
+
+# Pull 2020 census data
+p1_2020 <- get_decennial(
+  geography = "block",
+  variables = c("P1_001N", "P1_003N", "P1_004N", "P1_005N", 
+                "P1_006N", "P1_007N", "P1_008N", "P1_009N"),
+  state = "NY",
+  county = nyc_counties,
+  year = 2020,
+  output = "wide"
+)
+
+p2_2020 <- get_decennial(
+  geography = "block",
+  variables = c("P2_001N", "P2_002N", "P2_003N"),
+  state = "NY",
+  county = nyc_counties,
+  year = 2020,
+  output = "wide"
+)
+
+# Join and interpolate 2020 data to precincts
+p1_2020 <- p1_2020 %>% rename(GEOID20 = GEOID)
+p2_2020 <- p2_2020 %>% rename(GEOID20 = GEOID)
+
+blocks_demo_2020 <- blocks_2020_nyc %>%
+  left_join(p1_2020, by = "GEOID20") %>%
+  left_join(p2_2020, by = "GEOID20")
+
+blocks_2020_proj <- st_transform(blocks_demo_2020, 32118)
+
+blocks_2020_proj <- blocks_2020_proj %>%
+  mutate(block_area = st_area(geometry))
+
+block_precinct_int_2020 <- st_intersection(blocks_2020_proj, precincts_proj)
+
+block_precinct_int_2020 <- block_precinct_int_2020 %>%
+  mutate(
+    piece_area = st_area(geometry),
+    weight = as.numeric(piece_area / block_area)
+  )
+
+demo_vars_2020 <- c("P1_001N", "P1_003N", "P1_004N", "P1_005N",
+                    "P1_006N", "P1_007N", "P1_008N", "P1_009N",
+                    "P2_001N", "P2_002N", "P2_003N")
+
+for (v in demo_vars_2020) {
+  block_precinct_int_2020[[paste0(v, "_alloc")]] <-
+    block_precinct_int_2020[[v]] * block_precinct_int_2020$weight
+}
+
+precinct_demographics_2020 <- block_precinct_int_2020 %>%
+  st_drop_geometry() %>%
+  group_by(precinct) %>%
+  summarise(across(ends_with("_alloc"), sum, na.rm = TRUE))
+
+precincts_2020 <- precincts_proj %>%
+  left_join(precinct_demographics_2020, by = "precinct")
+```
+
+DOWNLOAD 2010 BLOCK GEOMs
+```{r}
+blocks_2010 <- blocks(state = "NY", county = nyc_counties, year = 2010)
+
+blocks_2010_nyc <- blocks_2010 %>%
+  filter(COUNTYFP10 %in% nyc_counties)
+
+# Pull 2010 census data
+p1_2010 <- get_decennial(
+  geography = "block",
+  variables = c("P003001", "P003002", "P003003", "P003004",
+                "P003005", "P003006", "P003007", "P003008"),
+  state = "NY",
+  county = nyc_counties,
+  year = 2010,
+  output = "wide"
+)
+
+p2_2010 <- get_decennial(
+  geography = "block",
+  variables = c("P004001", "P004002", "P004003"),
+  state = "NY",
+  county = nyc_counties,
+  year = 2010,
+  output = "wide"
+)
+
+# Join and interpolate 2010 data to precincts
+p1_2010 <- p1_2010 %>% rename(GEOID10 = GEOID)
+p2_2010 <- p2_2010 %>% rename(GEOID10 = GEOID)
+
+blocks_demo_2010 <- blocks_2010_nyc %>%
+  left_join(p1_2010, by = "GEOID10") %>%
+  left_join(p2_2010, by = "GEOID10")
+
+blocks_2010_proj <- st_transform(blocks_demo_2010, 32118)
+
+blocks_2010_proj <- blocks_2010_proj %>%
+  mutate(block_area = st_area(geometry))
+
+block_precinct_int_2010 <- st_intersection(blocks_2010_proj, precincts_proj)
+
+block_precinct_int_2010 <- block_precinct_int_2010 %>%
+  mutate(
+    piece_area = st_area(geometry),
+    weight = as.numeric(piece_area / block_area)
+  )
+
+demo_vars_2010 <- c("P003001", "P003002", "P003003", "P003004",
+                    "P003005", "P003006", "P003007", "P003008",
+                    "P004001", "P004002", "P004003")
+
+for (v in demo_vars_2010) {
+  block_precinct_int_2010[[paste0(v, "_alloc")]] <-
+    block_precinct_int_2010[[v]] * block_precinct_int_2010$weight
+}
+
+precinct_demographics_2010 <- block_precinct_int_2010 %>%
+  st_drop_geometry() %>%
+  group_by(precinct) %>%
+  summarise(across(ends_with("_alloc"), sum, na.rm = TRUE))
+
+precincts_2010 <- precincts_proj %>%
+  left_join(precinct_demographics_2010, by = "precinct")
+```
+
+STANDARDIZE COL NAMES
+```{r}
+precincts_2010 <- precincts_2010 %>%
+  rename(
+    total_pop_alloc = P003001_alloc,
+    white_alloc = P003002_alloc,
+    black_alloc = P003003_alloc,
+    aian_alloc = P003004_alloc,
+    asian_alloc = P003005_alloc,
+    nhpi_alloc = P003006_alloc,
+    other_alloc = P003007_alloc,
+    two_or_more_alloc = P003008_alloc,
+    hispanic_total_alloc = P004001_alloc,
+    hispanic_alloc = P004002_alloc,
+    not_hispanic_alloc = P004003_alloc
+  )
+
+precincts_2020 <- precincts_2020 %>%
+  rename(
+    total_pop_alloc = P1_001N_alloc,
+    white_alloc = P1_003N_alloc,
+    black_alloc = P1_004N_alloc,
+    aian_alloc = P1_005N_alloc,
+    asian_alloc = P1_006N_alloc,
+    nhpi_alloc = P1_007N_alloc,
+    other_alloc = P1_008N_alloc,
+    two_or_more_alloc = P1_009N_alloc,
+    hispanic_total_alloc = P2_001N_alloc,
+    hispanic_alloc = P2_002N_alloc,
+    not_hispanic_alloc = P2_003N_alloc
+  )
+```
+
+LOAD AND PREP CRIME DATA
+```{r}
+violent_crimes <- read.csv("data/violent_felony_cleaned_13.csv")
+
+violent_sf <- st_as_sf(
+  violent_crimes,
+  coords = c("long", "lat"),
+  crs = 4326
+)
+
+violent_sf <- violent_sf %>%
+  filter(
+    !is.na(geometry),
+    sf::st_coordinates(geometry)[, 1] > -74.5,
+    sf::st_coordinates(geometry)[, 1] < -73.7,
+    sf::st_coordinates(geometry)[, 2] > 40.45,
+    sf::st_coordinates(geometry)[, 2] < 40.95
+  )
+
+violent_proj <- st_transform(violent_sf, 32118)
+
+violent_proj <- violent_proj %>%
+  mutate(
+    complaint_date = as.Date(complaint_date),
+    year = as.integer(format(complaint_date, "%Y"))
+  )
+```
+
+BEFORE/AFTER DATASETS
+```{r}
+# Filter crimes by period
+crimes_before <- violent_proj %>% filter(year >= 2010 & year <= 2012)
+crimes_after <- violent_proj %>% filter(year >= 2017 & year <= 2019)
+
+print(paste("Crimes before (2010-2012):", nrow(crimes_before)))
+print(paste("Crimes after (2017-2019):", nrow(crimes_after)))
+
+# Count crimes per precinct - BEFORE
+crime_counts_before <- crimes_before %>%
+  st_join(precincts_proj, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(precinct) %>%
+  summarise(total_crimes = n(), .groups = "drop")
+
+precincts_before <- precincts_2010 %>%
+  left_join(crime_counts_before, by = "precinct") %>%
+  mutate(
+    total_crimes = replace_na(total_crimes, 0),
+    crime_rate = (total_crimes / total_pop_alloc) * 1000,
+    pct_black = (black_alloc / total_pop_alloc) * 100,
+    pct_hispanic = (hispanic_alloc / total_pop_alloc) * 100,
+    pct_white = (white_alloc / total_pop_alloc) * 100
+  )
+
+# Count crimes per precinct - AFTER
+crime_counts_after <- crimes_after %>%
+  st_join(precincts_proj, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(precinct) %>%
+  summarise(total_crimes = n(), .groups = "drop")
+
+precincts_after <- precincts_2020 %>%
+  left_join(crime_counts_after, by = "precinct") %>%
+  mutate(
+    total_crimes = replace_na(total_crimes, 0),
+    crime_rate = (total_crimes / total_pop_alloc) * 1000,
+    pct_black = (black_alloc / total_pop_alloc) * 100,
+    pct_hispanic = (hispanic_alloc / total_pop_alloc) * 100,
+    pct_white = (white_alloc / total_pop_alloc) * 100
+  )
+```
+
+```{r}
+# Remove Central Park (Precinct 22) - negligible residential population
+precincts_before <- precincts_before %>% filter(precinct != "22")
+precincts_after <- precincts_after %>% filter(precinct != "22")
+
+print(paste("Precincts remaining (before):", nrow(precincts_before)))
+print(paste("Precincts remaining (after):", nrow(precincts_after)))
+
+# Verify new summary stats
+print("=== BEFORE (excluding Central Park) ===")
+print(summary(precincts_before$crime_rate))
+
+print("=== AFTER (excluding Central Park) ===")
+print(summary(precincts_after$crime_rate))
+```
+
+VERIFY DATA & check for outliers
+```{r}
+# Summary stats
+print("=== BEFORE PERIOD (2010-2012 crimes + 2010 census) ===")
+print(paste("N precincts:", nrow(precincts_before)))
+print(summary(precincts_before$crime_rate))
+print(summary(precincts_before$pct_black))
+
+print("=== AFTER PERIOD (2017-2019 crimes + 2020 census) ===")
+print(paste("N precincts:", nrow(precincts_after)))
+print(summary(precincts_after$crime_rate))
+print(summary(precincts_after$pct_black))
+
+# Top crime rate precincts (sanity check)
+print("=== Top 5 crime rates - BEFORE ===")
+precincts_before %>%
+  st_drop_geometry() %>%
+  select(precinct, total_crimes, total_pop_alloc, crime_rate) %>%
+  arrange(desc(crime_rate)) %>%
+  head(5)
+```
+
+SPATIAL WEIGHTS AND MORANS I
+CREATE SPATIAL WEIGHTS MATRIX
+```{r}
+# We need to create weights for BOTH datasets
+# Since we removed precinct 22, we need fresh neighbor structures
+
+# Convert to sp objects for spdep
+precincts_before_sp <- as(precincts_before, "Spatial")
+precincts_after_sp <- as(precincts_after, "Spatial")
+
+# Create queen contiguity neighbors (precincts sharing edges or corners)
+nb_before <- poly2nb(precincts_before_sp, queen = TRUE)
+nb_after <- poly2nb(precincts_after_sp, queen = TRUE)
+
+# Convert to spatial weights (row-standardized)
+weights_before <- nb2listw(nb_before, style = "W", zero.policy = TRUE)
+weights_after <- nb2listw(nb_after, style = "W", zero.policy = TRUE)
+
+print("Spatial weights created successfully")
+print(paste("Average # of neighbors (before):", round(mean(card(nb_before)), 2)))
+print(paste("Average # of neighbors (after):", round(mean(card(nb_after)), 2)))
+
+```
+
+GLOBAL MORANS I FOR CRIME RATE
+```{r}
+print("========== GLOBAL MORAN'S I: CRIME RATE ==========")
+
+# Before period
+moran_crime_before <- moran.test(precincts_before$crime_rate, weights_before)
+print("--- BEFORE (2010-2012) ---")
+print(moran_crime_before)
+
+# After period
+moran_crime_after <- moran.test(precincts_after$crime_rate, weights_after)
+print("--- AFTER (2017-2019) ---")
+print(moran_crime_after)
+
+```
+
+GOBAL MORANS I FOR PERCENT OF BLACK POP
+```{r}
+print("========== GLOBAL MORAN'S I: PCT BLACK ==========")
+
+# Before period
+moran_black_before <- moran.test(precincts_before$pct_black, weights_before)
+print("--- BEFORE (2010-2012) ---")
+print(moran_black_before)
+
+# After period
+moran_black_after <- moran.test(precincts_after$pct_black, weights_after)
+print("--- AFTER (2017-2019) ---")
+print(moran_black_after)
+```
+
+SUMMARY TABLE
+```{r}
+moran_summary <- data.frame(
+  Variable = c("Crime Rate", "Crime Rate", "Pct Black", "Pct Black"),
+  Period = c("Before", "After", "Before", "After"),
+  Morans_I = c(
+    moran_crime_before$estimate["Moran I statistic"],
+    moran_crime_after$estimate["Moran I statistic"],
+    moran_black_before$estimate["Moran I statistic"],
+    moran_black_after$estimate["Moran I statistic"]
+  ),
+  P_Value = c(
+    moran_crime_before$p.value,
+    moran_crime_after$p.value,
+    moran_black_before$p.value,
+    moran_black_after$p.value
+  )
+)
+
+print("========== MORAN'S I SUMMARY ==========")
+print(moran_summary)
+```
+
+Crime Rate
+PeriodMoran's Ip-valueInterpretationBefore0.2690.00009Moderate positive clustering, highly significantAfter0.3410.000003Stronger positive clustering, highly significant
+What this means:
+
+Crime is spatially clustered in both periods (not randomly distributed)
+High-crime precincts tend to be near other high-crime precincts
+The clustering INCREASED after Patternizr (0.269 → 0.341)
+
+Percent Black
+PeriodMoran's Ip-valueInterpretationBefore0.570~0Strong positive clusteringAfter0.558~0Strong positive clustering
+What this means:
+
+Racial composition is highly clustered (this is segregation - no surprise)
+Precincts with high Black populations are near other precincts with high Black populations
+This didn't change much between periods (0.570 → 0.558)
+
+
+The Interesting Finding
+Crime rate clustering increased after Patternizr (0.269 → 0.341), while racial clustering stayed basically the same.
+This could suggest:
+
+Patternizr concentrated policing in certain areas (creating more spatial clustering of recorded crime)
+Or crime patterns genuinely became more geographically concentrated
+Or other factors changed between 2010-2012 and 2017-2019
+
+
+
+LOCAL MORANS I (LISA)
+```{r}
+# BEFORE period
+lisa_crime_before <- localmoran(precincts_before$crime_rate, weights_before)
+lisa_black_before <- localmoran(precincts_before$pct_black, weights_before)
+
+# AFTER period
+lisa_crime_after <- localmoran(precincts_after$crime_rate, weights_after)
+lisa_black_after <- localmoran(precincts_after$pct_black, weights_after)
+```
+
+CREATE LISA CLUSTER CATS
+```{r}
+get_lisa_clusters <- function(variable, lisa_output, weights) {
+  # Get standardized values
+  z <- scale(variable)[,1]
+  
+  # Get lagged values (neighbors' average)
+  lag_z <- lag.listw(weights, z)
+  
+  # Get p-values (using column 5: Pr(z != E(Ii)))
+  p_value <- lisa_output[, 5]
+  
+  # Classify into quadrants
+  cluster <- case_when(
+    p_value > 0.05 ~ "Not Significant",
+    z > 0 & lag_z > 0 ~ "High-High",
+    z < 0 & lag_z < 0 ~ "Low-Low",
+    z > 0 & lag_z < 0 ~ "High-Low",
+    z < 0 & lag_z > 0 ~ "Low-High",
+    TRUE ~ "Not Significant"
+  )
+  
+  return(cluster)
+}
+
+# Apply to all four combinations
+precincts_before$lisa_crime <- get_lisa_clusters(
+  precincts_before$crime_rate, lisa_crime_before, weights_before
+)
+precincts_before$lisa_black <- get_lisa_clusters(
+  precincts_before$pct_black, lisa_black_before, weights_before
+)
+
+precincts_after$lisa_crime <- get_lisa_clusters(
+  precincts_after$crime_rate, lisa_crime_after, weights_after
+)
+precincts_after$lisa_black <- get_lisa_clusters(
+  precincts_after$pct_black, lisa_black_after, weights_after
+)
+```
+
+SUMMARY TABLE
+```{r}
+print("=== LISA Clusters: CRIME RATE ===")
+print("BEFORE:")
+print(table(precincts_before$lisa_crime))
+print("AFTER:")
+print(table(precincts_after$lisa_crime))
+
+print("=== LISA Clusters: PCT BLACK ===")
+print("BEFORE:")
+print(table(precincts_before$lisa_black))
+print("AFTER:")
+print(table(precincts_after$lisa_black))
+```
+
+KEY QUESTION - OVERLAP???
+```{r}
+print("=== OVERLAP: High-High Crime AND High-High Black ===")
+
+# Before period
+overlap_before <- precincts_before %>%
+  st_drop_geometry() %>%
+  filter(lisa_crime == "High-High" & lisa_black == "High-High") %>%
+  select(precinct, crime_rate, pct_black)
+
+print("BEFORE - Precincts that are High-High for BOTH crime and Black population:")
+print(overlap_before)
+print(paste("Count:", nrow(overlap_before)))
+
+# After period
+overlap_after <- precincts_after %>%
+  st_drop_geometry() %>%
+  filter(lisa_crime == "High-High" & lisa_black == "High-High") %>%
+  select(precinct, crime_rate, pct_black)
+
+print("AFTER - Precincts that are High-High for BOTH crime and Black population:")
+print(overlap_after)
+print(paste("Count:", nrow(overlap_after)))
+
+```
+
+CROSS TABULATION
+```{r}
+
+print("=== Full Cross-Tabulation: Crime Clusters vs Black Clusters ===")
+print("BEFORE:")
+print(table(precincts_before$lisa_crime, precincts_before$lisa_black))
+
+print("AFTER:")
+print(table(precincts_after$lisa_crime, precincts_after$lisa_black))
+```
+
+Key Results
+Before Patternizr (2010-2012)
+
+3 precincts were High-High for BOTH crime and Black population
+These were precincts 73, 77, and 81 (all in Brooklyn, likely Brownsville/East New York area)
+Crime rates: 40-63 per 1,000
+Black population: 72-82%
+
+After Patternizr (2017-2019)
+
+0 precincts were High-High for BOTH crime and Black population
+The overlap completely disappeared!
+
+What Does This Mean?
+This is actually a nuanced finding. Let's look at what changed:
+MetricBeforeAfterChangeHigh-High Crime precincts64↓ Fewer crime hot spotsHigh-High Black precincts76↓ Slightly fewerOverlap (both High-High)30↓ No overlap
+Possible Interpretations
+
+Optimistic interpretation: Policing became more equitable - crime hot spots are no longer concentrated in predominantly Black neighborhoods
+Alternative interpretation: Crime recording patterns changed - perhaps Patternizr shifted where crimes were being recorded/prioritized
+Demographic shift: Some neighborhoods may have gentrified between 2010 and 2020, changing the racial composition
+
+DIGGING DEEPER
+```{r}
+# What happened to precincts 73, 77, 81?
+track_precincts <- c("73", "77", "81")
+
+print("=== Tracking Precincts 73, 77, 81 ===")
+
+print("BEFORE (2010-2012):")
+precincts_before %>%
+  st_drop_geometry() %>%
+  filter(precinct %in% track_precincts) %>%
+  select(precinct, total_crimes, crime_rate, pct_black, lisa_crime, lisa_black) %>%
+  print()
+
+print("AFTER (2017-2019):")
+precincts_after %>%
+  st_drop_geometry() %>%
+  filter(precinct %in% track_precincts) %>%
+  select(precinct, total_crimes, crime_rate, pct_black, lisa_crime, lisa_black) %>%
+  print()
+
+# Also: which precincts ARE High-High for crime in the AFTER period?
+print("=== Which precincts are High-High for crime AFTER? ===")
+precincts_after %>%
+  st_drop_geometry() %>%
+  filter(lisa_crime == "High-High") %>%
+  select(precinct, crime_rate, pct_black, lisa_black) %>%
+  print()
+
+# And which are High-High for Black population AFTER?
+print("=== Which precincts are High-High for Black pop AFTER? ===")
+precincts_after %>%
+  st_drop_geometry() %>%
+  filter(lisa_black == "High-High") %>%
+  select(precinct, crime_rate, pct_black, lisa_crime) %>%
+  print()
+```
+
+"=== Tracking Precincts 73, 77, 81 ==="
+[1] "BEFORE (2010-2012):"
+  precinct total_crimes crime_rate pct_black lisa_crime lisa_black
+1       73         5411   62.52496  81.73487  High-High  High-High
+2       77         3597   39.89329  72.30491  High-High  High-High
+3       81         3621   57.68057  80.20771  High-High  High-High
+[1] "AFTER (2017-2019):"
+  precinct total_crimes crime_rate pct_black      lisa_crime      lisa_black
+1       73         4254   43.16300  71.84071 Not Significant       High-High
+2       77         2467   24.36427  50.39772 Not Significant       High-High
+3       81         2601   37.73448  58.09961 Not Significant Not Significant
+[1] "=== Which precincts are High-High for crime AFTER? ==="
+  precinct crime_rate pct_black      lisa_black
+1       40   49.56718  34.22379 Not Significant
+2       41   50.61239  30.28773 Not Significant
+3       42   36.31798  45.89912 Not Significant
+4       44   29.94631  33.84694 Not Significant
+[1] "=== Which precincts are High-High for Black pop AFTER? ==="
+  precinct crime_rate pct_black      lisa_crime
+1       67   24.55377  80.40893 Not Significant
+2       63   11.55723  43.82666 Not Significant
+3       69   17.14669  81.46211 Not Significant
+4       73   43.16300  71.84071 Not Significant
+5       77   24.36427  50.39772 Not Significant
+6      100   19.17792  24.78987 Not Significant
+
+What Happened to Precincts 73, 77, 81
+PrecinctCrime Rate BEFORECrime Rate AFTERChangePct Black BEFOREPct Black AFTERChange7362.543.2↓ 31%81.7%71.8%↓ 10 pts7739.924.4↓ 39%72.3%50.4%↓ 22 pts8157.737.7↓ 35%80.2%58.1%↓ 22 pts
+Key Observations
+
+Crime rates dropped substantially in all three precincts (31-39% decrease)
+Black population percentages also dropped (likely gentrification in these Brooklyn neighborhoods)
+These precincts went from "High-High" to "Not Significant" for crime - meaning they're no longer statistical outliers
+
+Interpretation? POTENTIAL:
+
+Geographic shift: Crime hot spots moved from predominantly Black Brooklyn neighborhoods to more diverse Bronx neighborhoods
+Gentrification effect: Precincts 73, 77, 81 experienced significant demographic change (20+ percentage point drops in Black population), which may have come with reduced crime
+Patternizr effect?: Harder to claim directly - the algorithm may have changed policing patterns, but demographic shifts are a major confound
+
+TAKEAWAY: The spatial overlap between crime hot spots and predominantly Black neighborhoods decreased between the pre-Patternizr (2010-2012) and post-Patternizr (2017-2019) periods. However, this change coincided with substantial demographic shifts in the original hot spot precincts, making it difficult to attribute the change solely to the predictive policing algorithm.
+
+
+LISA MAPS
+```{r}
+# ============================================
+# 9G: LISA CLUSTER MAPS
+# ============================================
+
+library(ggplot2)
+
+# Define color scheme for LISA clusters
+lisa_colors <- c(
+  "High-High" = "#E41A1C",    # Red - hot spots
+  "Low-Low" = "#377EB8",       # Blue - cold spots
+  "High-Low" = "#FF7F00",      # Orange - outliers
+  "Low-High" = "#984EA3",      # Purple - outliers
+  "Not Significant" = "#D3D3D3" # Gray
+)
+
+# --------------------------------------------
+# CRIME RATE LISA MAPS
+# --------------------------------------------
+
+# Before
+map_crime_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = lisa_crime), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "LISA Cluster") +
+  theme_minimal() +
+  labs(
+    title = "Crime Rate Clusters: BEFORE Patternizr (2010-2012)",
+    subtitle = "Local Moran's I cluster classification"
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+print(map_crime_before)
+
+# After
+map_crime_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = lisa_crime), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "LISA Cluster") +
+  theme_minimal() +
+  labs(
+    title = "Crime Rate Clusters: AFTER Patternizr (2017-2019)",
+    subtitle = "Local Moran's I cluster classification"
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+print(map_crime_after)
+
+# --------------------------------------------
+# PCT BLACK LISA MAPS
+# --------------------------------------------
+
+# Before
+map_black_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = lisa_black), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "LISA Cluster") +
+  theme_minimal() +
+  labs(
+    title = "Black Population Clusters: BEFORE (2010 Census)",
+    subtitle = "Local Moran's I cluster classification"
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+print(map_black_before)
+
+# After
+map_black_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = lisa_black), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "LISA Cluster") +
+  theme_minimal() +
+  labs(
+    title = "Black Population Clusters: AFTER (2020 Census)",
+    subtitle = "Local Moran's I cluster classification"
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+print(map_black_after)
+
+# --------------------------------------------
+# SIDE-BY-SIDE COMPARISON (optional but nice)
+# --------------------------------------------
+
+library(patchwork)
+
+# Crime comparison
+crime_comparison <- map_crime_before + map_crime_after +
+  plot_annotation(title = "Crime Hot Spots: Before vs After Patternizr")
+
+print(crime_comparison)
+
+# Black population comparison
+black_comparison <- map_black_before + map_black_after +
+  plot_annotation(title = "Black Population Clusters: 2010 vs 2020")
+
+print(black_comparison)
+
+# Save maps
+ggsave("lisa_crime_before.png", map_crime_before, width = 8, height = 8)
+ggsave("lisa_crime_after.png", map_crime_after, width = 8, height = 8)
+ggsave("lisa_black_before.png", map_black_before, width = 8, height = 8)
+ggsave("lisa_black_after.png", map_black_after, width = 8, height = 8)
+ggsave("lisa_crime_comparison.png", crime_comparison, width = 14, height = 7)
+ggsave("lisa_black_comparison.png", black_comparison, width = 14, height = 7)
+
+print("Maps saved!")
+```
+
+MONTE CARLO SIMULATION
+create funct
+```{r}
+set.seed(65)
+simulate_morans_i <- function(precincts_df, weights, n_sims = 999) {
+  
+  # Get total crimes and population
+  total_crimes <- sum(precincts_df$total_crimes)
+  populations <- precincts_df$total_pop_alloc
+  total_pop <- sum(populations)
+  
+  # Population proportions (probability of crime in each precinct under null)
+  pop_proportions <- populations / total_pop
+  
+  # Store simulated Moran's I values
+  sim_morans <- numeric(n_sims)
+  
+  # Run simulations
+  for (i in 1:n_sims) {
+    # Randomly allocate crimes proportional to population
+    # Each crime is assigned to a precinct with probability = pop proportion
+    sim_crimes <- rmultinom(1, size = total_crimes, prob = pop_proportions)[,1]
+    
+    # Calculate simulated crime rate
+    sim_rate <- (sim_crimes / populations) * 1000
+    
+    # Handle any Inf values (shouldn't happen but just in case)
+    sim_rate[is.infinite(sim_rate)] <- 0
+    
+    # Calculate Moran's I for this simulation
+    sim_moran <- moran(sim_rate, weights, n = length(sim_rate), S0 = Szero(weights))
+    sim_morans[i] <- sim_moran$I
+    
+    # Progress indicator
+    if (i %% 100 == 0) {
+      cat("Completed", i, "of", n_sims, "simulations\n")
+    }
+  }
+  
+  return(sim_morans)
+}
+```
+
+RUN SIMS FOR BEFORE
+```{r}
+cat("\n========== BEFORE PERIOD SIMULATION ==========\n")
+
+# Observed Moran's I
+observed_moran_before <- moran(
+  precincts_before$crime_rate, 
+  weights_before, 
+  n = nrow(precincts_before), 
+  S0 = Szero(weights_before)
+)$I
+
+cat("Observed Moran's I (Before):", round(observed_moran_before, 4), "\n\n")
+
+# Run simulation
+cat("Running 999 simulations under null hypothesis...\n")
+sim_morans_before <- simulate_morans_i(precincts_before, weights_before, n_sims = 999)
+
+# Calculate p-value (proportion of simulated values >= observed)
+p_value_before <- (sum(sim_morans_before >= observed_moran_before) + 1) / (999 + 1)
+
+cat("\nSimulation Results (Before):\n")
+cat("  Mean simulated Moran's I:", round(mean(sim_morans_before), 4), "\n")
+cat("  SD simulated Moran's I:", round(sd(sim_morans_before), 4), "\n")
+cat("  Observed Moran's I:", round(observed_moran_before, 4), "\n")
+cat("  Monte Carlo p-value:", round(p_value_before, 4), "\n")
+```
+
+RUN SIMS FOR AFTER
+```{r}
+cat("\n========== AFTER PERIOD SIMULATION ==========\n")
+
+# Observed Moran's I
+observed_moran_after <- moran(
+  precincts_after$crime_rate, 
+  weights_after, 
+  n = nrow(precincts_after), 
+  S0 = Szero(weights_after)
+)$I
+
+cat("Observed Moran's I (After):", round(observed_moran_after, 4), "\n\n")
+
+# Run simulation
+cat("Running 999 simulations under null hypothesis...\n")
+sim_morans_after <- simulate_morans_i(precincts_after, weights_after, n_sims = 999)
+
+# Calculate p-value
+p_value_after <- (sum(sim_morans_after >= observed_moran_after) + 1) / (999 + 1)
+
+cat("\nSimulation Results (After):\n")
+cat("  Mean simulated Moran's I:", round(mean(sim_morans_after), 4), "\n")
+cat("  SD simulated Moran's I:", round(sd(sim_morans_after), 4), "\n")
+cat("  Observed Moran's I:", round(observed_moran_after, 4), "\n")
+cat("  Monte Carlo p-value:", round(p_value_after, 4), "\n")
+```
+
+visualize histogram of sims
+```{r}
+# Create data frame for plotting
+sim_df <- data.frame(
+  Morans_I = c(sim_morans_before, sim_morans_after),
+  Period = rep(c("Before (2010-2012)", "After (2017-2019)"), each = 999)
+)
+
+observed_df <- data.frame(
+  Morans_I = c(observed_moran_before, observed_moran_after),
+  Period = c("Before (2010-2012)", "After (2017-2019)")
+)
+
+# Plot
+monte_carlo_plot <- ggplot(sim_df, aes(x = Morans_I)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7, color = "white") +
+  geom_vline(data = observed_df, aes(xintercept = Morans_I), 
+             color = "red", linetype = "dashed", size = 1.2) +
+  facet_wrap(~Period, ncol = 1) +
+  theme_minimal() +
+  labs(
+    title = "Monte Carlo Simulation: Crime Rate Spatial Autocorrelation",
+    subtitle = "Null hypothesis: Crime distributed proportionally to population",
+    x = "Moran's I",
+    y = "Frequency",
+    caption = "Red dashed line = Observed Moran's I"
+  ) +
+  theme(
+    strip.text = element_text(size = 12, face = "bold")
+  )
+
+print(monte_carlo_plot)
+
+ggsave("monte_carlo_simulation.png", monte_carlo_plot, width = 10, height = 8)
+
+```
+
+SUMMARY TABLE
+```{r}
+mc_summary <- data.frame(
+  Period = c("Before (2010-2012)", "After (2017-2019)"),
+  Observed_Morans_I = c(observed_moran_before, observed_moran_after),
+  Mean_Simulated = c(mean(sim_morans_before), mean(sim_morans_after)),
+  SD_Simulated = c(sd(sim_morans_before), sd(sim_morans_after)),
+  P_Value = c(p_value_before, p_value_after)
+)
+
+print("========== MONTE CARLO SUMMARY ==========")
+print(mc_summary)
+
+# Interpretation
+cat("\n========== INTERPRETATION ==========\n")
+if (p_value_before < 0.05) {
+  cat("BEFORE: Reject null hypothesis - crime is MORE clustered than expected under population-proportional distribution (p =", round(p_value_before, 4), ")\n")
+} else {
+  cat("BEFORE: Fail to reject null - crime clustering is consistent with population-proportional distribution (p =", round(p_value_before, 4), ")\n")
+}
+
+if (p_value_after < 0.05) {
+  cat("AFTER: Reject null hypothesis - crime is MORE clustered than expected under population-proportional distribution (p =", round(p_value_after, 4), ")\n")
+} else {
+  cat("AFTER: Fail to reject null - crime clustering is consistent with population-proportional distribution (p =", round(p_value_after, 4), ")\n")
+}
+```
+
+The blue histograms show what Moran's I values look like under the null hypothesis (crime distributed proportionally to population). They're centered around 0 (no spatial autocorrelation).The red dashed line is observed Moran's I - way out in the right tail for both periods.
+
+In both periods, crime is significantly MORE clustered than we would expect if it were simply distributed proportionally to population.
+- If crime happened randomly based on where people live, we'd expect Moran's I ≈ 0
+- But we observe Moran's I of 0.27-0.34, which is far outside what we'd expect by chance
+- This means there's "excess" spatial clustering of crime beyond what population explains 
+
+
+"========== MONTE CARLO SUMMARY =========="
+              Period Observed_Morans_I Mean_Simulated SD_Simulated P_Value
+1 Before (2010-2012)         0.2694396    -0.01333626   0.08746933   0.003
+2  After (2017-2019)         0.3410835    -0.01349132   0.08583694   0.001
+
+========== INTERPRETATION ==========
+BEFORE: Reject null hypothesis - crime is MORE clustered than expected under population-proportional distribution (p = 0.003 )
+AFTER: Reject null hypothesis - crime is MORE clustered than expected under population-proportional distribution (p = 0.001 )
+
+
+FINAL VISUALIZATIONS TO USE
+```{r}
+library(ggplot2)
+library(patchwork)
+
+#choloropleth maps of CRIME before/after
+# Set consistent scale for comparison
+crime_rate_range <- range(c(precincts_before$crime_rate, precincts_after$crime_rate))
+
+map_rate_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = crime_rate), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    name = "Crime Rate\n(per 1,000)",
+    limits = crime_rate_range
+  ) +
+  theme_minimal() +
+  labs(title = "BEFORE Patternizr (2010-2012)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+map_rate_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = crime_rate), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    name = "Crime Rate\n(per 1,000)",
+    limits = crime_rate_range
+  ) +
+  theme_minimal() +
+  labs(title = "AFTER Patternizr (2017-2019)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+crime_rate_comparison <- map_rate_before + map_rate_after +
+  plot_annotation(
+    title = "Violent Felony Rates by NYPD Precinct",
+    subtitle = "Before and After Patternizr Implementation"
+  )
+
+print(crime_rate_comparison)
+ggsave("crime_rate_comparison.png", crime_rate_comparison, width = 14, height = 7)
+
+
+```
+
+```{r}
+#chloropleth maps black pct BEFORE and AFTER
+
+pct_black_range <- range(c(precincts_before$pct_black, precincts_after$pct_black))
+
+map_black_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = pct_black), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "% Black",
+    limits = pct_black_range
+  ) +
+  theme_minimal() +
+  labs(title = "2010 Census") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+map_black_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = pct_black), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    option = "magma",
+    name = "% Black",
+    limits = pct_black_range
+  ) +
+  theme_minimal() +
+  labs(title = "2020 Census") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+pct_black_comparison <- map_black_before + map_black_after +
+  plot_annotation(
+    title = "Black Population by NYPD Precinct",
+    subtitle = "Demographic Change 2010-2020"
+  )
+
+print(pct_black_comparison)
+ggsave("pct_black_comparison.png", pct_black_comparison, width = 14, height = 7)
+```
+
+LISA MAPS SIDE BY SIDE - CRIME
+```{r}
+lisa_colors <- c(
+  "High-High" = "#E41A1C",
+  "Low-Low" = "#377EB8",
+  "High-Low" = "#FF7F00",
+  "Low-High" = "#984EA3",
+  "Not Significant" = "#D3D3D3"
+)
+
+lisa_crime_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = lisa_crime), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "Cluster Type") +
+  theme_minimal() +
+  labs(title = "BEFORE (2010-2012)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+lisa_crime_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = lisa_crime), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "Cluster Type") +
+  theme_minimal() +
+  labs(title = "AFTER (2017-2019)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+lisa_crime_comparison <- lisa_crime_before + lisa_crime_after +
+  plot_annotation(
+    title = "Crime Rate Hot Spots (LISA Clusters)",
+    subtitle = "Red = High-High clusters (hot spots)"
+  )
+
+print(lisa_crime_comparison)
+ggsave("lisa_crime_comparison.png", lisa_crime_comparison, width = 14, height = 7)
+```
+
+LISA MAPS SIDE BY SIDE - BLACK PCT
+```{r}
+lisa_black_before <- ggplot(precincts_before) +
+  geom_sf(aes(fill = lisa_black), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "Cluster Type") +
+  theme_minimal() +
+  labs(title = "2010 Census") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+lisa_black_after <- ggplot(precincts_after) +
+  geom_sf(aes(fill = lisa_black), color = "white", size = 0.2) +
+  scale_fill_manual(values = lisa_colors, name = "Cluster Type") +
+  theme_minimal() +
+  labs(title = "2020 Census") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+lisa_black_comparison <- lisa_black_before + lisa_black_after +
+  plot_annotation(
+    title = "Black Population Clusters (LISA)",
+    subtitle = "Red = High-High clusters"
+  )
+
+print(lisa_black_comparison)
+ggsave("lisa_black_comparison.png", lisa_black_comparison, width = 14, height = 7)
+```
+
+SCATTER PLOT CRIME VS. PCT BLACK
+```{r}
+# Combine data for plotting
+scatter_before <- precincts_before %>%
+  st_drop_geometry() %>%
+  select(precinct, crime_rate, pct_black) %>%
+  mutate(Period = "Before (2010-2012)")
+
+scatter_after <- precincts_after %>%
+  st_drop_geometry() %>%
+  select(precinct, crime_rate, pct_black) %>%
+  mutate(Period = "After (2017-2019)")
+
+scatter_data <- bind_rows(scatter_before, scatter_after)
+
+scatter_plot <- ggplot(scatter_data, aes(x = pct_black, y = crime_rate, color = Period)) +
+  geom_point(alpha = 0.6, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = c("Before (2010-2012)" = "#E41A1C", "After (2017-2019)" = "#377EB8")) +
+  theme_minimal() +
+  labs(
+    title = "Crime Rate vs. Black Population by Precinct",
+    subtitle = "Before and After Patternizr",
+    x = "% Black Population",
+    y = "Crime Rate (per 1,000 residents)"
+  )
+
+print(scatter_plot)
+ggsave("scatter_crime_vs_black.png", scatter_plot, width = 10, height = 7)
+```
+
+Both lines slope upward → precincts with higher Black populations tend to have higher crime rates. This is the core pattern your hypothesis is about.
+
+The relationship is STEEPER in the "Before" period.
+
+Crime rates dropped overall - The blue dots are generally lower than the red dots at any given % Black level. This matches what we saw earlier - crime decreased across NYC.
+
+The red dot at ~115 crime rate with low Black % is Precinct 14 (Midtown South) - a commercial area with low residential population but lots of crime. Similar pattern to Central Park but not as extreme.
+
+TAKEAWAY: The flattening of the slope from Before to After suggests that the race-crime relationship weakened over time. This is consistent with your LISA finding that the overlap between crime hot spots and Black population hot spots disappeared.
+
+MORANS I COMPARISON BAR CHART
+```{r}
+moran_plot_data <- data.frame(
+  Variable = c("Crime Rate", "Crime Rate", "% Black", "% Black"),
+  Period = c("Before", "After", "Before", "After"),
+  Morans_I = c(0.269, 0.341, 0.570, 0.558)
+)
+
+moran_plot_data$Period <- factor(moran_plot_data$Period, levels = c("Before", "After"))
+
+moran_bar <- ggplot(moran_plot_data, aes(x = Variable, y = Morans_I, fill = Period)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_fill_manual(values = c("Before" = "#E41A1C", "After" = "#377EB8")) +
+  theme_minimal() +
+  labs(
+    title = "Spatial Autocorrelation: Before vs After Patternizr",
+    subtitle = "Global Moran's I (higher = more clustered)",
+    x = "",
+    y = "Moran's I"
+  ) +
+  ylim(0, 0.7)
+
+print(moran_bar)
+ggsave("morans_i_comparison.png", moran_bar, width = 8, height = 6)
+```
+
+SUMMARY RESULTS
+```{r}
+results_table <- data.frame(
+  Metric = c(
+    "Crime Rate Moran's I",
+    "Crime Rate Moran's I",
+    "% Black Moran's I",
+    "% Black Moran's I",
+    "Crime High-High Clusters",
+    "Crime High-High Clusters",
+    "Black High-High Clusters",
+    "Black High-High Clusters",
+    "Overlapping High-High",
+    "Overlapping High-High",
+    "Monte Carlo p-value",
+    "Monte Carlo p-value"
+  ),
+  Period = rep(c("Before (2010-2012)", "After (2017-2019)"), 6),
+  Value = c(
+    "0.269", "0.341",
+    "0.570", "0.558",
+    "6 precincts", "4 precincts",
+    "7 precincts", "6 precincts",
+    "3 precincts", "0 precincts",
+    "0.003", "0.001"
+  )
+)
+
+print("========== SUMMARY RESULTS TABLE ==========")
+print(results_table)
+
+# Save as CSV for easy inclusion in paper
+write.csv(results_table, "results_summary.csv", row.names = FALSE)
+
+print("\n========== ALL VISUALIZATIONS SAVED ==========")
+```
+
+GEOGRAPHICALLY WEIGHT REGRESSION
+```{r}
+# ============================================
+# SECTION 12: GEOGRAPHICALLY WEIGHTED REGRESSION
+# ============================================
+
+library(spgwr)
+
+# --------------------------------------------
+# 12A: Prepare data for GWR - BEFORE period
+# --------------------------------------------
+
+# Remove any NAs and prepare sf object
+precincts_gwr_before <- precincts_before %>%
+  filter(!is.na(crime_rate), !is.na(pct_black), !is.na(pct_hispanic), !is.na(pct_white))
+
+# Get centroids for GWR
+coords_before <- st_coordinates(st_centroid(precincts_gwr_before))
+
+# Create sp object
+precincts_sp_before <- as(precincts_gwr_before, "Spatial")
+
+# --------------------------------------------
+# 12B: Fit GWR - BEFORE period
+# --------------------------------------------
+
+cat("=== Fitting GWR for BEFORE period ===\n")
+
+# Bandwidth selection (this may take a moment)
+bw_before <- gwr.sel(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_before,
+  coords = coords_before,
+  adapt = TRUE
+)
+
+cat("Optimal adaptive bandwidth (Before):", round(bw_before, 3), "\n")
+
+# Fit GWR model
+gwr_before <- gwr(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_before,
+  coords = coords_before,
+  adapt = bw_before,
+  hatmatrix = TRUE
+)
+
+print(gwr_before)
+
+# --------------------------------------------
+# 12C: Prepare data for GWR - AFTER period
+# --------------------------------------------
+
+precincts_gwr_after <- precincts_after %>%
+  filter(!is.na(crime_rate), !is.na(pct_black), !is.na(pct_hispanic), !is.na(pct_white))
+
+coords_after <- st_coordinates(st_centroid(precincts_gwr_after))
+
+precincts_sp_after <- as(precincts_gwr_after, "Spatial")
+
+# --------------------------------------------
+# 12D: Fit GWR - AFTER period
+# --------------------------------------------
+
+cat("\n=== Fitting GWR for AFTER period ===\n")
+
+bw_after <- gwr.sel(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_after,
+  coords = coords_after,
+  adapt = TRUE
+)
+
+cat("Optimal adaptive bandwidth (After):", round(bw_after, 3), "\n")
+
+gwr_after <- gwr(
+  crime_rate ~ pct_black + pct_hispanic + pct_white,
+  data = precincts_sp_after,
+  coords = coords_after,
+  adapt = bw_after,
+  hatmatrix = TRUE
+)
+
+print(gwr_after)
+
+# --------------------------------------------
+# 12E: Extract and map local coefficients
+# --------------------------------------------
+
+# Extract coefficients from GWR results
+gwr_coefs_before <- as.data.frame(gwr_before$SDF)
+gwr_coefs_after <- as.data.frame(gwr_after$SDF)
+
+# Add to sf objects
+precincts_gwr_before$gwr_pct_black <- gwr_coefs_before$pct_black
+precincts_gwr_before$gwr_intercept <- gwr_coefs_before$`(Intercept)`
+precincts_gwr_before$gwr_localR2 <- gwr_coefs_before$localR2
+
+precincts_gwr_after$gwr_pct_black <- gwr_coefs_after$pct_black
+precincts_gwr_after$gwr_intercept <- gwr_coefs_after$`(Intercept)`
+precincts_gwr_after$gwr_localR2 <- gwr_coefs_after$localR2
+
+# --------------------------------------------
+# 12F: Map local pct_black coefficients
+# --------------------------------------------
+
+# Get consistent color scale
+coef_range <- range(c(precincts_gwr_before$gwr_pct_black, precincts_gwr_after$gwr_pct_black))
+
+gwr_map_before <- ggplot(precincts_gwr_before) +
+  geom_sf(aes(fill = gwr_pct_black), color = "white", size = 0.2) +
+  scale_fill_gradient2(
+    low = "#377EB8",      # Blue = negative/weak effect
+    mid = "white",
+    high = "#E41A1C",     # Red = strong positive effect
+    midpoint = 0,
+    name = "Local\nCoefficient",
+    limits = coef_range
+  ) +
+  theme_minimal() +
+  labs(title = "BEFORE (2010-2012)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+gwr_map_after <- ggplot(precincts_gwr_after) +
+  geom_sf(aes(fill = gwr_pct_black), color = "white", size = 0.2) +
+  scale_fill_gradient2(
+    low = "#377EB8",
+    mid = "white",
+    high = "#E41A1C",
+    midpoint = 0,
+    name = "Local\nCoefficient",
+    limits = coef_range
+  ) +
+  theme_minimal() +
+  labs(title = "AFTER (2017-2019)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+gwr_comparison <- gwr_map_before + gwr_map_after +
+  plot_annotation(
+    title = "GWR: Local Effect of % Black on Crime Rate",
+    subtitle = "Red = stronger positive relationship; Blue = weaker/negative relationship"
+  )
+
+print(gwr_comparison)
+ggsave("gwr_pct_black_comparison.png", gwr_comparison, width = 14, height = 7)
+
+# --------------------------------------------
+# 12G: Summary statistics of local coefficients
+# --------------------------------------------
+
+cat("\n=== GWR Local Coefficient Summary: pct_black ===\n")
+
+cat("\nBEFORE period:\n")
+print(summary(precincts_gwr_before$gwr_pct_black))
+
+cat("\nAFTER period:\n")
+print(summary(precincts_gwr_after$gwr_pct_black))
+
+# --------------------------------------------
+# 12H: Map local R-squared (model fit)
+# --------------------------------------------
+
+r2_range <- range(c(precincts_gwr_before$gwr_localR2, precincts_gwr_after$gwr_localR2))
+
+r2_map_before <- ggplot(precincts_gwr_before) +
+  geom_sf(aes(fill = gwr_localR2), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    name = "Local R²",
+    limits = r2_range
+  ) +
+  theme_minimal() +
+  labs(title = "BEFORE (2010-2012)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+r2_map_after <- ggplot(precincts_gwr_after) +
+  geom_sf(aes(fill = gwr_localR2), color = "white", size = 0.2) +
+  scale_fill_viridis_c(
+    name = "Local R²",
+    limits = r2_range
+  ) +
+  theme_minimal() +
+  labs(title = "AFTER (2017-2019)") +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+
+r2_comparison <- r2_map_before + r2_map_after +
+  plot_annotation(
+    title = "GWR: Local Model Fit (R²)",
+    subtitle = "Higher = demographics explain more crime variation in that area"
+  )
+
+print(r2_comparison)
+ggsave("gwr_localR2_comparison.png", r2_comparison, width = 14, height = 7)
+
+cat("\n=== GWR ANALYSIS COMPLETE ===\n")
+```
+
+The much smaller bandwidth in the "After" period means the relationship became more localized - it varies much more from place to place.
+
+Before Patternizr: The relationship between race and crime was relatively uniform across NYC. Every precinct showed roughly the same positive relationship (0.23-0.40).
+After Patternizr: The relationship became wildly variable. Some precincts show negative relationships (-1.53), others show very strong positive relationships (7.27).
+
+TAKEAWAY: While the global relationship between Black population and crime rate remained positive in both periods, GWR reveals that this relationship became substantially more spatially variable after Patternizr implementation. Before the algorithm, the race-crime relationship was relatively uniform across precincts (coefficients ranging 0.23-0.40). After implementation, local coefficients ranged from -1.53 to 7.27, suggesting that the algorithm may have created more localized policing patterns.
+
+```{r}
+```
