@@ -47,7 +47,7 @@ In addition, we use geographically weighted regression (GWR) as a diagnostic to 
 
 ## Spatial Units and Coordinate Systems
 
-The unit of analysis is the NYPD precinct. We load an official precinct boundary shapefile and project it to an equal-area / planar coordinate system appropriate for spatial operations (EPSG:32118). All spatial overlays and neighborhood constructions (contiguity weights) are conducted in this projected CRS to ensure that area calculations and adjacency relationships are well-defined.
+The unit of analysis is each NYPD precinct. We load an official precinct boundary shapefile and project it to an equal-area / planar coordinate system appropriate for spatial operations (EPSG:32118). All spatial overlays and neighborhood constructions (contiguity weights) are conducted in this projected CRS to ensure that area calculations and adjacency relationships are well-defined.
 
 LOAD PRECINT SHAPEFILE
 ```{r}
