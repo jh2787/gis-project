@@ -3,7 +3,6 @@ title: Examinig claims of Racial Bias in Predictive Policing through a Geographi
 format:
   html:
     code-fold: true
-    code-summary: "Show code"
 authors:
   - name: Fareeza Ali and Jackson Howes
     affiliation: Georgetown University
@@ -21,7 +20,7 @@ library(spdep)
 
 # Abstract
 
-Predictive policing systems have been repeatedly criticized for reproducing and amplifying racial disparities, yet empirical evaluation is complicated by the fact that “crime data” are not neutral measurements of underlying criminal behavior but administrative records produced through enforcement, reporting, and institutional decision-making. In this manuscript, we assess whether spatial patterns in recorded violent felony incidents changed in ways consistent with the claim that algorithmic policing intensified racially disparate enforcement. We adopt a geographic perspective, using NYPD precincts as the unit of analysis, violent felony complaint records as the outcome, and census-derived racial composition as the principal demographic covariate. Our design compares a pre-period (2010–2012) and a post-period (2013–2019) bracketing the implementation window of Patternizr, a predictive policing system introduced by the NYPD in 2013. We quantify global spatial autocorrelation in both crime rates and Black population share using Moran’s \(I\), identify local clusters using Local Indicators of Spatial Association (LISA), and assess whether observed clustering exceeds what would be expected under a population-proportional null model via Monte Carlo simulation. Finally, we use geographically weighted regression (GWR) to examine whether the relationship between racial composition and recorded crime rates became more spatially heterogeneous over time. We emphasize throughout that any observed differences are associational rather than causal, given concurrent neighborhood change and other confounds; nonetheless, this framework isolates concrete, testable spatial signatures that are directly relevant to claims of algorithmically mediated bias.
+Predictive policing systems have been repeatedly criticized for reproducing and amplifying racial disparities, yet empirical evaluation is complicated by the fact that “crime data” are not neutral measurements of underlying criminal behavior but administrative records produced through enforcement, reporting, and institutional decision-making. In this manuscript, we assess whether spatial patterns in recorded violent felony incidents changed in ways consistent with the claim that algorithmic policing intensified racially disparate enforcement. We adopt a geographic perspective, using NYPD precincts as the unit of analysis, violent felony complaint records as the outcome, and census-derived racial composition as the principal demographic covariate. Our design compares a pre-period (2010–2012) and a post-period (2013–2019) bracketing the implementation window of Patternizr, a predictive policing system introduced by the NYPD in 2013. We quantify global spatial autocorrelation in both crime rates and Black population share using Moran’s \(I\), identify local clusters using Local Indicators of Spatial Association (LISA), and assess whether observed clustering exceeds what would be expected under a population-proportional null model via Monte Carlo simulation. Finally, we use geographically weighted regression (GWR) to examine whether the relationship between racial composition and recorded crime rates became more spatially heterogeneous over time. We emphasize throughout that any observed differences are associational rather than causal, given concurrent neighborhood change and other confounds; nonetheless, this framework isolates concrete spatial signatures that are directly relevant to claims of algorithmically mediated bias.
 
 # Introduction
 
@@ -362,7 +361,7 @@ print(summary(precincts_after$crime_rate))
 
 # Methods Overview
 
-Our empirical strategy combines global measures of spatial autocorrelation, local cluster detection, a simulation-based null model to benchmark observed clustering, and a spatially varying regression diagnostic. These components correspond directly to the computational workflow implemented below.
+Our empirical strategy combines (i) global measures of spatial autocorrelation, (ii) local cluster detection, (iii) a simulation-based null model to benchmark observed clustering, and (iv) a spatially varying regression diagnostic. These components correspond directly to the computational workflow implemented below.
 
 ## Global Spatial Autocorrelation: Moran’s \(I\)
 
@@ -484,7 +483,7 @@ To identify localized clusters and spatial outliers, we compute Local Moran’s 
 - Low–High: low outlier surrounded by high values  
 - Not significant
 
-The substantive comparison is whether High–High crime precincts co-occur with High–High Black precincts, and whether the count (and identity) of overlapping precincts changes from the pre-period to the post-period.
+The key substantive comparison is whether High–High crime precincts co-occur with High–High Black precincts, and whether the count (and identity) of overlapping precincts changes from the pre-period to the post-period.
 
 LOCAL MORANS I (LISA)
 ```{r}
